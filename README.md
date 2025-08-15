@@ -1,4 +1,2 @@
 # gnomepomodoro
 # gnomepomodoro
-# gnomepomodoro
-# gnomepomodoro
