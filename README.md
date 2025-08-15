@@ -85,9 +85,13 @@ We’re looking for:
 📄 License
 
 This project is licensed under the MIT License – see the LICENSE file for details.
+
+
 📷 Preview
-<img width="306" height="240" alt="image" src="https://github.com/user-attachments/assets/829f0155-0e90-4234-888c-f9860c0d9991" />
-<img width="202" height="156" alt="image" src="https://github.com/user-attachments/assets/64218ef8-3866-4125-b497-46dc19fd9c31" />
+
+<img width="306" height="240" alt="preview1" src="https://github.com/user-attachments/assets/829f0155-0e90-4234-888c-f9860c0d9991" />
+
+<img width="202" height="156" alt="preview2" src="https://github.com/user-attachments/assets/64218ef8-3866-4125-b497-46dc19fd9c31" />
 
 
 
