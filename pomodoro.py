@@ -10,7 +10,7 @@ class PomodoroTimer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Pomodoro Timer")
-        self.root.geometry("300x200")
+        self.root.geometry("300x240")  # Tinggi ditambahin buat task field
 
         # =========================
         # ALWAYS-ON-TOP Enhancements
@@ -80,14 +80,25 @@ class PomodoroTimer:
         main_frame = tk.Frame(self.root)
         main_frame.pack(expand=True, fill='both', padx=10, pady=10)
 
-        # Progress info
-        self.info_label = tk.Label(
+        # ========== TASK FIELD (NEW) ==========
+        self.task_entry = tk.Entry(
             main_frame,
-            text="Click Start to begin",
-            font=('Montserrat', 8),
-            fg='white'
+            font=('Montserrat', 10),
+            fg='white',
+            bg='#4A90E2',
+            relief='flat',
+            justify='center',
+            highlightthickness=0,
+            borderwidth=0,
+            insertbackground='white'
         )
-        self.info_label.pack(pady=(0, 0))
+        self.task_entry.insert(0, "type your task here")
+        self.task_entry.pack(pady=(0, 10), fill='x')
+        
+        # Placeholder behavior
+        self.task_entry.bind('<FocusIn>', self._on_task_focus_in)
+        self.task_entry.bind('<FocusOut>', self._on_task_focus_out)
+        # ======================================
 
         # Timer display
         self.time_label = tk.Label(
@@ -96,7 +107,16 @@ class PomodoroTimer:
             font=('Montserrat', 46, 'bold'),
             fg='white'
         )
-        self.time_label.pack(pady=(0, 0))
+        self.time_label.pack(pady=(0, 5))
+
+        # Progress info (moved below timer)
+        self.info_label = tk.Label(
+            main_frame,
+            text="Click Start to begin",
+            font=('Montserrat', 8),
+            fg='white'
+        )
+        self.info_label.pack(pady=(0, 5))
 
         # Button frame
         button_frame = tk.Frame(main_frame)
@@ -165,10 +185,21 @@ class PomodoroTimer:
         )
         self.phase_label.pack(pady=(0, 0))
 
+    # ---------- Task Entry Placeholder ----------
+    def _on_task_focus_in(self, event):
+        """Clear placeholder saat focus"""
+        if self.task_entry.get() == "type your task here":
+            self.task_entry.delete(0, tk.END)
+
+    def _on_task_focus_out(self, event):
+        """Restore placeholder kalau kosong"""
+        if self.task_entry.get().strip() == "":
+            self.task_entry.insert(0, "type your task here")
+
     def configure_bg_recursive(self, widget, bg_color):
         try:
-            # jangan ubah bg Button karena kita set manual
-            if widget.winfo_class() != 'Button':
+            # jangan ubah bg Button atau Entry karena kita set manual
+            if widget.winfo_class() not in ('Button', 'Entry'):
                 widget.configure(bg=bg_color)
         except Exception:
             pass
@@ -187,7 +218,7 @@ class PomodoroTimer:
             self.root.after(2000, self._keep_on_top)
 
     def _nudge_topmost(self):
-        """Toggle cepat supaya WM ‘ngeh’ perubahan."""
+        """Toggle cepat supaya WM 'ngeh' perubahan."""
         try:
             self.root.attributes('-topmost', False)
             self.root.after(10, lambda: (
@@ -204,6 +235,9 @@ class PomodoroTimer:
 
     # ---------- Drag-anywhere ----------
     def _on_drag_start(self, event):
+        # Jangan drag kalau klik di entry field
+        if event.widget == self.task_entry:
+            return
         # mulai drag di area manapun
         self._dragging = True
         self._drag_start = (event.x_root, event.y_root)
@@ -251,6 +285,9 @@ class PomodoroTimer:
         # Update button backgrounds to match
         self.start_pause_btn.config(bg=bg_color, activebackground=bg_color)
         self.reset_btn.config(bg=bg_color, activebackground=bg_color)
+        
+        # Update task entry background to match
+        self.task_entry.config(bg=bg_color)
 
     def toggle_timer(self):
         if self.is_running:
