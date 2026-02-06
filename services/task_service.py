@@ -1,32 +1,48 @@
+# services/task_service.py  (REPLACE) — remove subtasks, add markdown notes
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from typing import List, Optional
 
-from domain.models import Task
-from storage.repos import TaskRepo
+from storage.db import Database
+from storage.repos import AppStateRepo, Task, TaskRepo
 
 
 class TaskService:
-    def __init__(self, repo: TaskRepo):
-        self.repo = repo
+    def __init__(self, db: Database):
+        self.db = db
+        self.tasks = TaskRepo(db)
+        self.state = AppStateRepo(db)
 
+    # ---- tasks ----
     def create_task(self, title: str) -> Task:
         title = (title or "").strip()
         if not title:
             raise ValueError("Task title cannot be empty.")
-        return self.repo.create(title=title, status="todo")
+        return self.tasks.create(title=title, status="todo")
 
     def list_tasks(self, status: Optional[str] = None) -> List[Task]:
-        return self.repo.list(status=status)
+        return self.tasks.list(status=status)
 
     def set_status(self, task_id: str, status: str) -> None:
-        self.repo.set_status(task_id, status)
+        if status not in ("todo", "doing", "done"):
+            raise ValueError("Invalid status.")
+        self.tasks.set_status(task_id, status)
 
-    def rename(self, task_id: str, title: str) -> None:
-        title = (title or "").strip()
-        if not title:
-            raise ValueError("Task title cannot be empty.")
-        self.repo.rename(task_id, title)
+    def delete_task(self, task_id: str) -> None:
+        active = self.state.get("active_task_id")
+        if active and active == task_id:
+            self.state.delete("active_task_id")
+        self.tasks.delete_task(task_id)
 
-    def get_task(self, task_id: str) -> Optional[Task]:
-        return self.repo.get(task_id)
+    # ---- notes (markdown) ----
+    def get_notes_md(self, task_id: str) -> str:
+        t = self.tasks.get(task_id)
+        if not t:
+            return ""
+        return self.tasks.get_notes_md(task_id) or ""
+
+    def set_notes_md(self, task_id: str, md: str) -> None:
+        if not self.tasks.get(task_id):
+            raise ValueError("Task not found.")
+        self.tasks.set_notes_md(task_id, md or "")
