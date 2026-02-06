@@ -1,4 +1,4 @@
-# services/task_service.py  (REPLACE) — remove subtasks, add markdown notes
+# services/task_service.py  (REPLACE) — tasks + markdown notes
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 

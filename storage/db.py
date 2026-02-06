@@ -22,7 +22,7 @@ class Database:
             );
         """)
 
-        # tasks (notes_md included in create statement)
+        # tasks (notes_md included)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
@@ -41,7 +41,7 @@ class Database:
                 "ALTER TABLE tasks ADD COLUMN notes_md TEXT NOT NULL DEFAULT '';"
             )
 
-        # sessions (pomodoro writes here)
+        # sessions
         cur.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,

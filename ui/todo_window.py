@@ -1,4 +1,4 @@
-# ui/todo_window.py  (REPLACE) — Kanban + hidden scrollbars + Markdown Render/Edit + AUTOSAVE
+# ui/todo_window.py  (REPLACE) — Kanban + Markdown Render/Edit + AUTOSAVE (selection friendly)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -41,7 +41,7 @@ class TodoWindow:
         self.root.title("Tasks — Kanban")
         self.root.geometry("1180x700")
 
-        # ===== Modern palette =====
+        # ===== palette =====
         self.bg = "#F4F6FA"
         self.panel = "#FFFFFF"
         self.border = "#E6EAF2"
@@ -60,13 +60,12 @@ class TodoWindow:
         self.active_task_title: Optional[str] = None
         self.active_task_status: Optional[str] = None
 
-        # mapping
+        # mapping index->task_id
         self._map_todo: Dict[int, str] = {}
         self._map_doing: Dict[int, str] = {}
         self._map_done: Dict[int, str] = {}
 
         # notes state
-        self._notes_current_task_id: Optional[str] = None
         self._notes_editing = False
         self._notes_dirty = False
         self._notes_save_job = None
@@ -74,10 +73,9 @@ class TodoWindow:
         self._build_ui()
         self._refresh_all()
 
-        # close hook (autosave)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---------- Hidden-scroll support ----------
+    # ---------- Scroll support ----------
     def _bind_mousewheel(self, widget):
         widget.bind(
             "<MouseWheel>",
@@ -190,7 +188,7 @@ class TodoWindow:
             pady=10,
         ).pack(side="left", padx=(10, 0))
 
-        # Body: board + notes panel
+        # Body: board + notes
         body = tk.Frame(self.root, bg=self.bg)
         body.pack(fill="both", expand=True, padx=18, pady=(0, 14))
 
@@ -201,7 +199,7 @@ class TodoWindow:
         notes.pack(side="right", fill="y")
         notes.pack_propagate(False)
 
-        # Kanban columns (NO visible scrollbars)
+        # Kanban columns
         self.col_todo = self._make_column(
             board, "TODO", hint="Backlog / next up", color=self.blue
         )
@@ -216,10 +214,10 @@ class TodoWindow:
         self.col_doing.pack(side="left", fill="both", expand=True, padx=(0, 10))
         self.col_done.pack(side="left", fill="both", expand=True)
 
-        # Notes panel (Markdown Render/Edit)
+        # Notes panel
         self._build_notes_panel(notes)
 
-        # Bottom action bar
+        # Bottom bar
         bottom = tk.Frame(self.root, bg=self.bg)
         bottom.pack(fill="x", padx=18, pady=(0, 16))
 
@@ -294,7 +292,6 @@ class TodoWindow:
         )
         self.notes_hint.pack(anchor="w", pady=(2, 10))
 
-        # one toggle button: Edit / Save
         topbar = tk.Frame(parent, bg=self.bg)
         topbar.pack(fill="x", pady=(0, 10))
 
@@ -320,11 +317,11 @@ class TodoWindow:
         )
         card.pack(fill="both", expand=True)
 
-        # Render widget (HTML)
+        # View (HTML)
         self.md_view = HtmlFrame(card, horizontal_scrollbar="auto")
         self.md_view.pack(fill="both", expand=True)
 
-        # Editor widget (Text) — hidden by default
+        # Edit (Text) — IMPORTANT: no global click listeners, fully native selection
         self.md_edit = tk.Text(
             card,
             wrap="word",
@@ -341,12 +338,19 @@ class TodoWindow:
             maxundo=-1,
         )
 
-        # textarea UX
         self._bind_mousewheel(self.md_edit)
+
+        # Ctrl+A works and DOES NOT break selection drag
         self.md_edit.bind(
             "<Control-a>",
             lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
         )
+        self.md_edit.bind(
+            "<Control-A>",
+            lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
+        )
+
+        # mark dirty on typing
         self.md_edit.bind("<KeyRelease>", lambda e: self._notes_on_change())
 
         self._render_markdown_to_view("Select a task…")
@@ -383,11 +387,6 @@ class TodoWindow:
             self.err.config(text=str(e))
 
     def _autosave_if_needed(self) -> bool:
-        """
-        Returns True if safe to continue.
-        If editing and dirty, it autosaves now.
-        If autosave fails, returns False (blocks action).
-        """
         if not self._notes_editing:
             return True
         if not self.active_task_id:
@@ -470,12 +469,13 @@ class TodoWindow:
             self.md_edit.delete("1.0", tk.END)
             self.md_edit.insert("1.0", md)
             self.md_edit.focus_set()
+
             self.btn_edit_save.config(text="Save")
             self._notes_editing = True
             self._notes_dirty = False
             return
 
-        # Save (manual) + back to render
+        # Save -> back to view
         if not self._autosave_if_needed():
             return
 
@@ -487,10 +487,11 @@ class TodoWindow:
             if md_new.strip()
             else "_No description yet. Click **Edit** to write one._"
         )
+
         self.btn_edit_save.config(text="Edit")
         self._notes_editing = False
 
-    # ---------- Entry placeholders ----------
+    # ---------- Entry placeholder ----------
     def _entry_focus_in(self, event):
         if self.task_entry.get().strip() == "Add a task and press Enter…":
             self.task_entry.delete(0, tk.END)
@@ -585,7 +586,6 @@ class TodoWindow:
             pass
 
     def _on_select(self, column: str):
-        # autosave current edit first
         if not self._autosave_if_needed():
             return
 
@@ -617,7 +617,7 @@ class TodoWindow:
             task_id = None
             title = None
 
-        # when switching task, force view mode
+        # switching task -> force view mode
         if self._notes_editing:
             self.md_edit.pack_forget()
             self.md_view.pack(fill="both", expand=True)
@@ -636,7 +636,6 @@ class TodoWindow:
             self.btn_edit_save.config(state="normal", text="Edit")
 
             md = self.task_service.get_notes_md(task_id) or ""
-            self._notes_current_task_id = task_id
             self._render_markdown_to_view(
                 md
                 if md.strip()
@@ -646,7 +645,6 @@ class TodoWindow:
             self.sel_label.config(text="Selected: -")
             self.notes_hint.config(text="Select a task to view description")
             self.btn_edit_save.config(state="disabled", text="Edit")
-            self._notes_current_task_id = None
             self._render_markdown_to_view("Select a task…")
 
         self._refresh_top_stats()
@@ -713,13 +711,7 @@ class TodoWindow:
 
         try:
             self.task_service.set_status(self.active_task_id, new_status)
-            self.err.config(text="")
-            self.active_task_id = None
-            self.active_task_title = None
-            self.active_task_status = None
-            self.sel_label.config(text="Selected: -")
-            self.btn_edit_save.config(state="disabled", text="Edit")
-            self._render_markdown_to_view("Select a task…")
+            self._clear_selection_state()
             self._refresh_all()
         except Exception as e:
             self.err.config(text=str(e))
@@ -741,16 +733,27 @@ class TodoWindow:
 
         try:
             self.task_service.set_status(self.active_task_id, new_status)
-            self.err.config(text="")
-            self.active_task_id = None
-            self.active_task_title = None
-            self.active_task_status = None
-            self.sel_label.config(text="Selected: -")
-            self.btn_edit_save.config(state="disabled", text="Edit")
-            self._render_markdown_to_view("Select a task…")
+            self._clear_selection_state()
             self._refresh_all()
         except Exception as e:
             self.err.config(text=str(e))
+
+    def _clear_selection_state(self):
+        self.err.config(text="")
+        self.active_task_id = None
+        self.active_task_title = None
+        self.active_task_status = None
+        self.sel_label.config(text="Selected: -")
+        self.notes_hint.config(text="Select a task to view description")
+        self.btn_edit_save.config(state="disabled", text="Edit")
+        self._render_markdown_to_view("Select a task…")
+
+        if self._notes_editing:
+            self.md_edit.pack_forget()
+            self.md_view.pack(fill="both", expand=True)
+            self.btn_edit_save.config(text="Edit")
+            self._notes_editing = False
+            self._notes_dirty = False
 
     def _open_pomodoro_for_selected(self):
         if not self.active_task_id:
@@ -760,7 +763,7 @@ class TodoWindow:
         if not self._autosave_if_needed():
             return
 
-        # exit edit mode to view (clean)
+        # exit edit mode cleanly
         if self._notes_editing:
             self.md_edit.pack_forget()
             self.md_view.pack(fill="both", expand=True)
@@ -831,7 +834,6 @@ class TodoWindow:
             self.stats_top.config(text=f"Today: {_fmt_hms(today)}")
 
     def _on_close(self):
-        # autosave before close
         try:
             self._autosave_if_needed()
         except Exception:
