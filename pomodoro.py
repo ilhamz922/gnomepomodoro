@@ -1,40 +1,61 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import tkinter as tk
 import os
+import sqlite3
+import time
+import tkinter as tk
+import uuid
+
+
+def _now_ts() -> int:
+    return int(time.time())
+
 
 class PomodoroTimer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Pomodoro Timer")
-        self.root.geometry("300x240")  # Tinggi ditambahin buat task field
+        self.root.geometry("300x240")
+
+        # =========================
+        # DB (shared with todo app)
+        # =========================
+        self.db_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "pomodoro.db"
+        )
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON;")
+        self._ensure_schema_min()
+
+        self.active_task_id = None
+        self.active_task_title = None
+
+        # current running session tracking
+        self._active_session_id = None
+        self._active_session_kind = None
 
         # =========================
         # ALWAYS-ON-TOP (NO PERIODIC WATCHDOG)
         # =========================
-        # set awal aja (tanpa alert/watchdog berkala)
-        self.root.attributes('-topmost', True)
+        self.root.attributes("-topmost", True)
         self.root.lift()
 
-        # event hooks (opsional, non-berkala): hanya nudge saat event
-        for ev in ('<FocusOut>', '<FocusIn>', '<Map>', '<Unmap>', '<Visibility>'):
+        for ev in ("<FocusOut>", "<FocusIn>", "<Map>", "<Unmap>", "<Visibility>"):
             self.root.bind(ev, lambda e: self._nudge_topmost())
 
-        # hotkey manual angkat
-        self.root.bind('<Control-Shift-Up>', lambda e: self._force_raise())
+        self.root.bind("<Control-Shift-Up>", lambda e: self._force_raise())
+        self.root.bind("<Escape>", lambda e: self._exit_fullscreen())
+        self.root.bind("<Control-r>", lambda e: self._reload_active_task_from_db())
 
-        # hotkey aman: ESC keluar fullscreen (biar gak kejebak)
-        self.root.bind('<Escape>', lambda e: self._exit_fullscreen())
-
-        # Keep window decorations for easy dragging via titlebar (sesuai kode asli)
         self.root.overrideredirect(False)
 
         # =========================
-        # Timer states (asli)
+        # Timer states
         # =========================
-        self.work_time = 25 * 60  # 25 minutes
-        self.break_time = 5 * 60  # 5 minutes
+        self.work_time = 25 * 60
+        self.break_time = 5 * 60
         self.current_time = self.work_time
         self.is_working = True
         self.is_running = False
@@ -48,7 +69,7 @@ class PomodoroTimer:
         self._prev_topmost = True
 
         # =========================
-        # Load icons (fallback ke label kalau ikon tidak ada)
+        # Load icons (fallback)
         # =========================
         self.icon_play = self._safe_image("play.png")
         self.icon_pause = self._safe_image("pause.png")
@@ -56,17 +77,147 @@ class PomodoroTimer:
 
         # Build UI
         self._build_ui()
+
+        # init task from todo selection
+        self._reload_active_task_from_db()
         self.update_display()
         self.update_background()
 
-        # =========================
-        # Drag-anywhere (opsional)
-        # =========================
+        # Drag-anywhere
         self._dragging = False
         self._drag_start = (0, 0)
         self.root.bind("<ButtonPress-1>", self._on_drag_start)
         self.root.bind("<B1-Motion>", self._on_drag_motion)
         self.root.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        # close db on exit
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------- DB ----------
+    def _ensure_schema_min(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                start_ts INTEGER NOT NULL,
+                end_ts INTEGER,
+                duration_sec INTEGER
+            );
+        """)
+        self.conn.commit()
+
+    def _db_get_app_state(self, key: str):
+        r = self.conn.execute(
+            "SELECT value FROM app_state WHERE key=?", (key,)
+        ).fetchone()
+        return r["value"] if r else None
+
+    def _db_get_task(self, task_id: str):
+        return self.conn.execute(
+            "SELECT id, title, status FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+
+    def _db_set_task_status(self, task_id: str, status: str):
+        ts = _now_ts()
+        self.conn.execute(
+            "UPDATE tasks SET status=?, updated_at=? WHERE id=?", (status, ts, task_id)
+        )
+        self.conn.commit()
+
+    def _db_start_session(self, task_id: str, kind: str):
+        self._db_end_session()
+        sid = str(uuid.uuid4())
+        ts = _now_ts()
+        self.conn.execute(
+            "INSERT INTO sessions(id, task_id, kind, start_ts, end_ts, duration_sec) VALUES(?,?,?,?,?,?)",
+            (sid, task_id, kind, ts, None, None),
+        )
+        self.conn.commit()
+        self._active_session_id = sid
+        self._active_session_kind = kind
+
+    def _db_end_session(self):
+        if not self._active_session_id:
+            return
+        sid = self._active_session_id
+        row = self.conn.execute(
+            "SELECT start_ts FROM sessions WHERE id=?", (sid,)
+        ).fetchone()
+        if row:
+            start_ts = int(row["start_ts"])
+            end_ts = _now_ts()
+            dur = max(0, end_ts - start_ts)
+            self.conn.execute(
+                "UPDATE sessions SET end_ts=?, duration_sec=? WHERE id=?",
+                (end_ts, dur, sid),
+            )
+            self.conn.commit()
+        self._active_session_id = None
+        self._active_session_kind = None
+
+    # ---------- FIX: this method must be at class level (not nested) ----------
+    def _reload_active_task_from_db(self):
+        bg = "#4A90E2" if self.is_working else "#7ED321"
+        try:
+            self.task_entry.config(disabledbackground=bg)
+        except Exception:
+            pass
+
+        task_id = self._db_get_app_state("active_task_id")
+        if not task_id:
+            self.active_task_id = None
+            self.active_task_title = None
+            self.task_entry.config(state="normal")
+            self.task_entry.delete(0, tk.END)
+            self.task_entry.insert(0, "select task from todo window")
+            self.task_entry.config(state="disabled")
+            self.info_label.config(
+                text="Pick a task in Todo Window (Pomodoro disabled)"
+            )
+            self._update_start_enabled()
+            return
+
+        task = self._db_get_task(task_id)
+        if not task:
+            self.active_task_id = None
+            self.active_task_title = None
+            self.task_entry.config(state="normal")
+            self.task_entry.delete(0, tk.END)
+            self.task_entry.insert(0, "selected task not found")
+            self.task_entry.config(state="disabled")
+            self.info_label.config(
+                text="Selected task missing. Re-pick in Todo Window."
+            )
+            self._update_start_enabled()
+            return
+
+        self.active_task_id = task["id"]
+        self.active_task_title = task["title"]
+
+        self.task_entry.config(state="normal")
+        self.task_entry.delete(0, tk.END)
+        self.task_entry.insert(0, self.active_task_title)
+        self.task_entry.config(state="disabled")
+
+        self.info_label.config(text="Ready")
+        self._update_start_enabled()
 
     # ---------- UTIL ----------
     def _safe_image(self, filename):
@@ -81,40 +232,35 @@ class PomodoroTimer:
     # ---------- UI ----------
     def _build_ui(self):
         main_frame = tk.Frame(self.root)
-        main_frame.pack(expand=True, fill='both', padx=10, pady=10)
+        main_frame.pack(expand=True, fill="both", padx=10, pady=10)
 
-        # ========== TASK FIELD ==========
         self.task_entry = tk.Entry(
             main_frame,
-            font=('Montserrat', 10),
-            fg='white',
-            bg='#4A90E2',
-            relief='flat',
-            justify='center',
+            font=("Montserrat", 10),
+            fg="white",
+            bg="#4A90E2",
+            disabledforeground="white",
+            disabledbackground="#4A90E2",
+            relief="flat",
+            justify="center",
             highlightthickness=0,
             borderwidth=0,
-            insertbackground='white'
+            insertbackground="white",
         )
-        self.task_entry.insert(0, "type your task here")
-        self.task_entry.pack(pady=(0, 10), fill='x')
-
-        self.task_entry.bind('<FocusIn>', self._on_task_focus_in)
-        self.task_entry.bind('<FocusOut>', self._on_task_focus_out)
-        # ======================================
+        self.task_entry.insert(0, "select task from todo window")
+        self.task_entry.config(state="disabled")
+        self.task_entry.pack(pady=(0, 10), fill="x")
 
         self.time_label = tk.Label(
-            main_frame,
-            text="25:00",
-            font=('Montserrat', 46, 'bold'),
-            fg='white'
+            main_frame, text="25:00", font=("Montserrat", 46, "bold"), fg="white"
         )
         self.time_label.pack(pady=(0, 5))
 
         self.info_label = tk.Label(
             main_frame,
-            text="Click Start to begin",
-            font=('Montserrat', 8),
-            fg='white'
+            text="Pick a task in Todo Window (Pomodoro disabled)",
+            font=("Montserrat", 8),
+            fg="white",
         )
         self.info_label.pack(pady=(0, 5))
 
@@ -126,94 +272,87 @@ class PomodoroTimer:
                 button_frame,
                 image=self.icon_play,
                 command=self.toggle_timer,
-                bg=self.root.cget('bg'),
-                activebackground=self.root.cget('bg'),
+                bg=self.root.cget("bg"),
+                activebackground=self.root.cget("bg"),
                 highlightthickness=0,
                 borderwidth=0,
-                relief='flat'
+                relief="flat",
             )
         else:
             self.start_pause_btn = tk.Button(
                 button_frame,
                 text="▶",
                 command=self.toggle_timer,
-                bg=self.root.cget('bg'),
-                activebackground=self.root.cget('bg'),
+                bg=self.root.cget("bg"),
+                activebackground=self.root.cget("bg"),
                 highlightthickness=0,
                 borderwidth=0,
-                relief='flat',
-                fg='white',
-                font=('Montserrat', 12, 'bold')
+                relief="flat",
+                fg="white",
+                font=("Montserrat", 12, "bold"),
             )
-        self.start_pause_btn.pack(side='left', padx=5)
+        self.start_pause_btn.pack(side="left", padx=5)
 
         if self.icon_refresh:
             self.reset_btn = tk.Button(
                 button_frame,
                 image=self.icon_refresh,
                 command=self.reset_timer,
-                bg=self.root.cget('bg'),
-                activebackground=self.root.cget('bg'),
+                bg=self.root.cget("bg"),
+                activebackground=self.root.cget("bg"),
                 highlightthickness=0,
                 borderwidth=0,
-                relief='flat'
+                relief="flat",
             )
         else:
             self.reset_btn = tk.Button(
                 button_frame,
                 text="⟲",
                 command=self.reset_timer,
-                bg=self.root.cget('bg'),
-                activebackground=self.root.cget('bg'),
+                bg=self.root.cget("bg"),
+                activebackground=self.root.cget("bg"),
                 highlightthickness=0,
                 borderwidth=0,
-                relief='flat',
-                fg='white',
-                font=('Montserrat', 12, 'bold')
+                relief="flat",
+                fg="white",
+                font=("Montserrat", 12, "bold"),
             )
-        self.reset_btn.pack(side='left', padx=5)
+        self.reset_btn.pack(side="left", padx=5)
 
         self.phase_label = tk.Label(
-            main_frame,
-            text="Deep Work",
-            font=('Montserrat', 8, 'bold'),
-            fg='white'
+            main_frame, text="Deep Work", font=("Montserrat", 8, "bold"), fg="white"
         )
         self.phase_label.pack(pady=(0, 0))
 
-    # ---------- Task Entry Placeholder ----------
-    def _on_task_focus_in(self, event):
-        if self.task_entry.get() == "type your task here":
-            self.task_entry.delete(0, tk.END)
+        self._update_start_enabled()
 
-    def _on_task_focus_out(self, event):
-        if self.task_entry.get().strip() == "":
-            self.task_entry.insert(0, "type your task here")
+    def _update_start_enabled(self):
+        self.start_pause_btn.config(
+            state=("normal" if self.active_task_id else "disabled")
+        )
 
     def configure_bg_recursive(self, widget, bg_color):
         try:
-            if widget.winfo_class() not in ('Button', 'Entry'):
+            if widget.winfo_class() not in ("Button", "Entry"):
                 widget.configure(bg=bg_color)
         except Exception:
             pass
         for child in widget.winfo_children():
             self.configure_bg_recursive(child, bg_color)
 
-    # ---------- AOT helpers (NO PERIODIC WATCHDOG) ----------
+    # ---------- AOT helpers ----------
     def _nudge_topmost(self):
         try:
-            # kalau fullscreen, tetap boleh, tapi jangan spam
-            self.root.attributes('-topmost', False)
-            self.root.after(10, lambda: (
-                self.root.lift(),
-                self.root.attributes('-topmost', True)
-            ))
+            self.root.attributes("-topmost", False)
+            self.root.after(
+                10, lambda: (self.root.lift(), self.root.attributes("-topmost", True))
+            )
         except Exception:
             pass
 
     def _force_raise(self):
         self.root.lift()
-        self.root.attributes('-topmost', True)
+        self.root.attributes("-topmost", True)
 
     # ---------- Fullscreen helpers ----------
     def _enter_fullscreen(self):
@@ -221,24 +360,21 @@ class PomodoroTimer:
             return
         try:
             self._prev_geometry = self.root.geometry()
-            self._prev_topmost = bool(self.root.attributes('-topmost'))
+            self._prev_topmost = bool(self.root.attributes("-topmost"))
         except Exception:
             self._prev_geometry = None
             self._prev_topmost = True
 
         self._is_fullscreen = True
-
-        # fullscreen + keep on top supaya bener-bener nutup layar
         try:
-            self.root.attributes('-fullscreen', True)
+            self.root.attributes("-fullscreen", True)
         except Exception:
-            # fallback kalau fullscreen attribute gak ada
             self.root.update_idletasks()
             w = self.root.winfo_screenwidth()
             h = self.root.winfo_screenheight()
             self.root.geometry(f"{w}x{h}+0+0")
 
-        self.root.attributes('-topmost', True)
+        self.root.attributes("-topmost", True)
         self.root.lift()
 
     def _exit_fullscreen(self):
@@ -247,7 +383,7 @@ class PomodoroTimer:
         self._is_fullscreen = False
 
         try:
-            self.root.attributes('-fullscreen', False)
+            self.root.attributes("-fullscreen", False)
         except Exception:
             pass
 
@@ -257,9 +393,8 @@ class PomodoroTimer:
             except Exception:
                 pass
 
-        # restore topmost (tetap default True sesuai behaviour awal)
         try:
-            self.root.attributes('-topmost', bool(self._prev_topmost))
+            self.root.attributes("-topmost", bool(self._prev_topmost))
         except Exception:
             pass
 
@@ -267,7 +402,6 @@ class PomodoroTimer:
 
     # ---------- Drag-anywhere ----------
     def _on_drag_start(self, event):
-        # disable drag kalau fullscreen (biar gak aneh)
         if self._is_fullscreen:
             return
         if event.widget == self.task_entry:
@@ -275,9 +409,9 @@ class PomodoroTimer:
         self._dragging = True
         self._drag_start = (event.x_root, event.y_root)
         try:
-            geo = self.root.geometry()  # "300x200+X+Y"
-            _, pos = geo.split('+', 1)
-            x_str, y_str = pos.split('+', 1)
+            geo = self.root.geometry()
+            _, pos = geo.split("+", 1)
+            x_str, y_str = pos.split("+", 1)
             self._win_start = (int(x_str), int(y_str))
         except Exception:
             self._win_start = (self.root.winfo_x(), self.root.winfo_y())
@@ -305,7 +439,7 @@ class PomodoroTimer:
         self.phase_label.config(text="Deep Work" if self.is_working else "Rest Time")
 
     def update_background(self):
-        bg_color = '#4A90E2' if self.is_working else '#7ED321'
+        bg_color = "#4A90E2" if self.is_working else "#7ED321"
         self.root.configure(bg=bg_color)
         for widget in self.root.winfo_children():
             self.configure_bg_recursive(widget, bg_color)
@@ -313,14 +447,37 @@ class PomodoroTimer:
         self.start_pause_btn.config(bg=bg_color, activebackground=bg_color)
         self.reset_btn.config(bg=bg_color, activebackground=bg_color)
         self.task_entry.config(bg=bg_color)
+        try:
+            self.task_entry.config(disabledbackground=bg_color)
+        except Exception:
+            pass
 
     def toggle_timer(self):
+        if not self.active_task_id:
+            self._reload_active_task_from_db()
+            return
+
         if self.is_running:
             self.pause_timer()
         else:
             self.start_timer()
 
     def start_timer(self):
+        if not self.active_task_id:
+            self.info_label.config(
+                text="Pick a task in Todo Window (Pomodoro disabled)"
+            )
+            self._update_start_enabled()
+            return
+
+        try:
+            self._db_set_task_status(self.active_task_id, "doing")
+        except Exception:
+            pass
+
+        kind = "work" if self.is_working else "break"
+        self._db_start_session(self.active_task_id, kind)
+
         self.is_running = True
         if self.icon_pause:
             self.start_pause_btn.config(image=self.icon_pause)
@@ -336,6 +493,9 @@ class PomodoroTimer:
         else:
             self.start_pause_btn.config(text="▶")
         self.info_label.config(text="Timer paused")
+
+        self._db_end_session()
+
         if self.timer_job:
             self.root.after_cancel(self.timer_job)
             self.timer_job = None
@@ -346,7 +506,7 @@ class PomodoroTimer:
             self.root.after_cancel(self.timer_job)
             self.timer_job = None
 
-        # keluar fullscreen kalau lagi break fullscreen
+        self._db_end_session()
         self._exit_fullscreen()
 
         self.is_working = True
@@ -370,25 +530,37 @@ class PomodoroTimer:
             self.phase_complete()
 
     def phase_complete(self):
-        # Switch phases
+        self._db_end_session()
+
         if self.is_working:
             self.is_working = False
             self.current_time = self.break_time
             self.info_label.config(text="Work complete! Take a break!")
-            # BREAK => fullscreen
             self._enter_fullscreen()
         else:
             self.is_working = True
             self.current_time = self.work_time
             self.info_label.config(text="Break over! Back to work!")
-            # WORK => exit fullscreen
             self._exit_fullscreen()
+
+        if self.active_task_id:
+            kind = "work" if self.is_working else "break"
+            self._db_start_session(self.active_task_id, kind)
 
         self.update_display()
         self.update_background()
-
-        # Auto-start next phase
         self.timer_job = self.root.after(1000, self.countdown)
+
+    def _on_close(self):
+        try:
+            self._db_end_session()
+        except Exception:
+            pass
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
