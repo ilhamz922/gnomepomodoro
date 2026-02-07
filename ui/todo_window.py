@@ -75,8 +75,8 @@ class TodoWindow:
         self._dnd_task_id: Optional[str] = None
         self._drag_gesture_active = False
 
-        # content switcher (properties + description only now)
-        self._active_tab = "properties"
+        # properties accordion
+        self._props_open = True
 
         # property autosave (debounced)
         self._prop_save_job = None
@@ -95,7 +95,7 @@ class TodoWindow:
         widget.bind("<Button-4>", lambda e: widget.yview_scroll(-1, "units"))
         widget.bind("<Button-5>", lambda e: widget.yview_scroll(1, "units"))
 
-    # ---------- ROOT FIX: deterministic click selection ----------
+    # ---------- deterministic click selection ----------
     def _bind_click_select(self, listbox: tk.Listbox, kind: str):
         def _click(e):
             if self._drag_gesture_active or self._dnd_active:
@@ -135,6 +135,10 @@ class TodoWindow:
         listbox.bind("<Button-1>", _click, add=False)
 
     def _apply_selected_task(self, column: str, task_id: Optional[str]):
+        if not self._autosave_if_needed():
+            return
+
+        # Exit notes edit mode when switching selection
         if self._notes_editing:
             self.md_edit.pack_forget()
             self.md_view.pack(fill="both", expand=True)
@@ -332,7 +336,7 @@ class TodoWindow:
         self.root.bind("<Control-Right>", lambda e: self._move_right())
         self.root.bind("<Delete>", lambda e: self._delete_selected_task())
 
-    # ---------- Side panel with content switcher ----------
+    # ---------- Side panel: Properties accordion (top) + Description (always visible) ----------
     def _build_side_panel(self, parent: tk.Frame):
         tk.Label(
             parent,
@@ -351,28 +355,17 @@ class TodoWindow:
         )
         self.details_hint.pack(anchor="w", pady=(2, 10))
 
-        # Tabs (properties + description)
-        tabs = tk.Frame(parent, bg=self.bg)
-        tabs.pack(fill="x", pady=(0, 10))
+        # ---- Properties accordion (TOP) ----
+        acc = tk.Frame(parent, bg=self.bg)
+        acc.pack(fill="x", pady=(0, 10))
 
-        self.btn_tab_props = tk.Button(
-            tabs,
-            text="Properties",
-            command=lambda: self._switch_tab("properties"),
-            bg=self.accent,
-            fg="white",
-            relief="flat",
-            bd=0,
-            padx=12,
-            pady=8,
-            font=("Montserrat", 10, "bold"),
-        )
-        self.btn_tab_props.pack(side="left")
+        acc_head = tk.Frame(acc, bg=self.bg)
+        acc_head.pack(fill="x", pady=(0, 6))
 
-        self.btn_tab_desc = tk.Button(
-            tabs,
-            text="Description",
-            command=lambda: self._switch_tab("description"),
+        self.btn_toggle_props = tk.Button(
+            acc_head,
+            text="▼ Properties",
+            command=self._toggle_properties_accordion,
             bg=self.graybtn,
             fg=self.text,
             relief="flat",
@@ -381,55 +374,114 @@ class TodoWindow:
             pady=8,
             font=("Montserrat", 10, "bold"),
         )
-        self.btn_tab_desc.pack(side="left", padx=(8, 0))
+        self.btn_toggle_props.pack(side="left")
 
-        self.frame_props = tk.Frame(parent, bg=self.bg)
-        self.frame_desc = tk.Frame(parent, bg=self.bg)
+        # Score quick glance on the right (biar gak perlu buka accordion)
+        self.score_pill = tk.Label(
+            acc_head,
+            text="Score: -",
+            bg=self.bg,
+            fg=self.muted,
+            font=("Montserrat", 10, "bold"),
+        )
+        self.score_pill.pack(side="right")
 
-        self.frame_props.pack(fill="both", expand=False)
-        self.frame_desc.pack_forget()
+        self.frame_props = tk.Frame(acc, bg=self.bg)
+        self.frame_props.pack(fill="x")
 
         self._build_properties_content(self.frame_props)
-        self._build_description_content(self.frame_desc)
 
+        # ---- Description (ALWAYS visible) ----
+        desc_header = tk.Frame(parent, bg=self.bg)
+        desc_header.pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            desc_header,
+            text="Description",
+            bg=self.bg,
+            fg=self.text,
+            font=("Montserrat", 13, "bold"),
+        ).pack(side="left")
+
+        self.btn_edit_save = tk.Button(
+            desc_header,
+            text="Edit",
+            command=self._toggle_edit_save,
+            bg=self.accent,
+            fg="white",
+            relief="flat",
+            bd=0,
+            activebackground=self.accent,
+            activeforeground="white",
+            font=("Montserrat", 10, "bold"),
+            padx=12,
+            pady=6,
+            state="disabled",
+        )
+        self.btn_edit_save.pack(side="right")
+
+        note_card = tk.Frame(
+            parent, bg=self.panel, highlightthickness=1, highlightbackground=self.border
+        )
+        note_card.pack(fill="both", expand=True)
+
+        self.md_view = HtmlFrame(note_card, horizontal_scrollbar="auto")
+        self.md_view.pack(fill="both", expand=True)
+
+        self.md_edit = tk.Text(
+            note_card,
+            wrap="word",
+            bg=self.panel,
+            fg=self.text,
+            insertbackground=self.text,
+            relief="flat",
+            highlightthickness=0,
+            font=("Montserrat", 10),
+            padx=12,
+            pady=10,
+            undo=True,
+            autoseparators=True,
+            maxundo=-1,
+        )
+        self._bind_mousewheel(self.md_edit)
+        self.md_edit.bind(
+            "<Control-a>",
+            lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
+        )
+        self.md_edit.bind(
+            "<Control-A>",
+            lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
+        )
+        self.md_edit.bind("<KeyRelease>", lambda e: self._notes_on_change())
+
+        self._render_markdown_to_view("Select a task…")
         self._enable_side_controls(False)
 
-    def _switch_tab(self, tab: str):
-        self._active_tab = tab
-
-        def set_btn(btn, active: bool):
-            if active:
-                btn.config(bg=self.accent, fg="white")
-            else:
-                btn.config(bg=self.graybtn, fg=self.text)
-
-        set_btn(self.btn_tab_props, tab == "properties")
-        set_btn(self.btn_tab_desc, tab == "description")
-
-        self.frame_props.pack_forget()
-        self.frame_desc.pack_forget()
-
-        if tab == "properties":
-            self.frame_props.pack(fill="both", expand=False)
+    def _toggle_properties_accordion(self):
+        self._props_open = not self._props_open
+        if self._props_open:
+            self.btn_toggle_props.config(text="▼ Properties")
+            self.frame_props.pack(fill="x")
         else:
-            self.frame_desc.pack(fill="both", expand=True)
+            self.btn_toggle_props.config(text="► Properties")
+            self.frame_props.pack_forget()
 
     def _enable_side_controls(self, enabled: bool):
         state = "normal" if enabled else "disabled"
-        self.name_entry.config(state=state)
-        self.due_entry.config(state=state)
-        self.btn_pick_date.config(state=state)
-        self.priority_menu.config(state=state)
-
-        self.btn_add_blocker.config(state=state)
-        self.btn_rm_blocker.config(state=state)
-        self.btn_add_waiting.config(state=state)
-        self.btn_rm_waiting.config(state=state)
-
         self.btn_edit_save.config(state=state)
 
-        # apply button is now optional (kept, but autosave is default)
-        self.btn_apply.config(state=state)
+        try:
+            self.name_entry.config(state=state)
+            self.due_entry.config(state=state)
+            self.btn_pick_date.config(state=state)
+            self.priority_menu.config(state=state)
+
+            self.btn_add_blocker.config(state=state)
+            self.btn_rm_blocker.config(state=state)
+            self.btn_add_waiting.config(state=state)
+            self.btn_rm_waiting.config(state=state)
+        except Exception:
+            pass
 
     # ---------- property autosave ----------
     def _schedule_prop_autosave(self, delay_ms: int = 650):
@@ -450,13 +502,11 @@ class TodoWindow:
             return
         if not self.active_task_id:
             return
-        # avoid fighting with notes edit autosave; still ok
         try:
             name = (self.name_entry.get() or "").strip()
             due = (self.due_entry.get() or "").strip()
             pr = (self.priority_var.get() or "P2").strip().upper()
 
-            # apply (silently)
             self.task_service.rename_task(self.active_task_id, name)
             self.task_service.set_due_date(self.active_task_id, due)
             self.task_service.set_priority(self.active_task_id, pr)
@@ -467,7 +517,7 @@ class TodoWindow:
         except Exception as e:
             self.err.config(text=str(e))
 
-    # ---------- Properties content ----------
+    # ---------- Properties content (includes deps) ----------
     def _build_properties_content(self, parent: tk.Frame):
         card = tk.Frame(
             parent, bg=self.panel, highlightthickness=1, highlightbackground=self.border
@@ -504,13 +554,22 @@ class TodoWindow:
         self.name_entry.pack(fill="x", ipady=6)
         self.name_entry.bind("<KeyRelease>", lambda e: self._schedule_prop_autosave())
 
-        # Due row
-        r2 = tk.Frame(card, bg=self.panel)
-        r2.pack(fill="x", padx=12, pady=(0, 6))
+        # Due + Priority (2 columns same row)
+        row2 = tk.Frame(card, bg=self.panel)
+        row2.pack(fill="x", padx=12, pady=(0, 6))
+
+        col_due = tk.Frame(row2, bg=self.panel)
+        col_due.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
         tk.Label(
-            r2, text="Due date", bg=self.panel, fg=self.muted, font=("Montserrat", 9)
+            col_due,
+            text="Due date",
+            bg=self.panel,
+            fg=self.muted,
+            font=("Montserrat", 9),
         ).pack(anchor="w")
-        due_row = tk.Frame(r2, bg=self.panel)
+
+        due_row = tk.Frame(col_due, bg=self.panel)
         due_row.pack(fill="x")
 
         self.due_entry = tk.Entry(
@@ -543,27 +602,32 @@ class TodoWindow:
         )
         self.btn_pick_date.pack(side="left", padx=(8, 0))
 
+        col_pr = tk.Frame(row2, bg=self.panel)
+        col_pr.pack(side="left", fill="x", expand=True, padx=(8, 0))
+
+        tk.Label(
+            col_pr,
+            text="Priority",
+            bg=self.panel,
+            fg=self.muted,
+            font=("Montserrat", 9),
+        ).pack(anchor="w")
+
+        self.priority_var = tk.StringVar(value="P2")
+        self.priority_menu = tk.OptionMenu(col_pr, self.priority_var, "P0", "P1", "P2")
+        self.priority_menu.config(
+            bg=self.graybtn, fg=self.text, relief="flat", bd=0, highlightthickness=0
+        )
+        self.priority_menu["menu"].config(bg=self.panel, fg=self.text)
+        self.priority_menu.pack(anchor="w", fill="x")
+        self.priority_var.trace_add("write", lambda *_: self._schedule_prop_autosave())
+
         self.due_info = tk.Label(
             card, text="—", bg=self.panel, fg=self.muted, font=("Montserrat", 9)
         )
         self.due_info.pack(anchor="w", padx=12, pady=(0, 8))
 
-        # Priority row
-        r3 = tk.Frame(card, bg=self.panel)
-        r3.pack(fill="x", padx=12, pady=(0, 10))
-        tk.Label(
-            r3, text="Priority", bg=self.panel, fg=self.muted, font=("Montserrat", 9)
-        ).pack(anchor="w")
-        self.priority_var = tk.StringVar(value="P2")
-        self.priority_menu = tk.OptionMenu(r3, self.priority_var, "P0", "P1", "P2")
-        self.priority_menu.config(
-            bg=self.graybtn, fg=self.text, relief="flat", bd=0, highlightthickness=0
-        )
-        self.priority_menu["menu"].config(bg=self.panel, fg=self.text)
-        self.priority_menu.pack(anchor="w")
-        self.priority_var.trace_add("write", lambda *_: self._schedule_prop_autosave())
-
-        # Dependencies row (now part of properties)
+        # Dependencies
         deps = tk.Frame(card, bg=self.panel)
         deps.pack(fill="x", padx=12, pady=(0, 12))
 
@@ -671,92 +735,6 @@ class TodoWindow:
             state="disabled",
         )
         self.btn_rm_waiting.pack(side="left", padx=(6, 0))
-
-        # Apply row (optional)
-        r4 = tk.Frame(card, bg=self.panel)
-        r4.pack(fill="x", padx=12, pady=(0, 12))
-        self.btn_apply = tk.Button(
-            r4,
-            text="Apply",
-            command=self._apply_properties,
-            bg=self.accent,
-            fg="white",
-            relief="flat",
-            bd=0,
-            activebackground=self.accent,
-            activeforeground="white",
-            font=("Montserrat", 10, "bold"),
-            padx=12,
-            pady=8,
-            state="disabled",
-        )
-        self.btn_apply.pack(side="right")
-
-    # ---------- Description content ----------
-    def _build_description_content(self, parent: tk.Frame):
-        notes_header = tk.Frame(parent, bg=self.bg)
-        notes_header.pack(fill="x", pady=(0, 6))
-
-        tk.Label(
-            notes_header,
-            text="Description",
-            bg=self.bg,
-            fg=self.text,
-            font=("Montserrat", 13, "bold"),
-        ).pack(side="left")
-
-        self.btn_edit_save = tk.Button(
-            notes_header,
-            text="Edit",
-            command=self._toggle_edit_save,
-            bg=self.accent,
-            fg="white",
-            relief="flat",
-            bd=0,
-            activebackground=self.accent,
-            activeforeground="white",
-            font=("Montserrat", 10, "bold"),
-            padx=12,
-            pady=6,
-            state="disabled",
-        )
-        self.btn_edit_save.pack(side="right")
-
-        note_card = tk.Frame(
-            parent, bg=self.panel, highlightthickness=1, highlightbackground=self.border
-        )
-        note_card.pack(fill="both", expand=True)
-
-        self.md_view = HtmlFrame(note_card, horizontal_scrollbar="auto")
-        self.md_view.pack(fill="both", expand=True)
-
-        self.md_edit = tk.Text(
-            note_card,
-            wrap="word",
-            bg=self.panel,
-            fg=self.text,
-            insertbackground=self.text,
-            relief="flat",
-            highlightthickness=0,
-            font=("Montserrat", 10),
-            padx=12,
-            pady=10,
-            undo=True,
-            autoseparators=True,
-            maxundo=-1,
-        )
-        self._bind_mousewheel(self.md_edit)
-        self.md_edit.bind(
-            "<Control-a>",
-            lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
-        )
-        self.md_edit.bind(
-            "<Control-A>",
-            lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
-        )
-        self.md_edit.bind("<KeyRelease>", lambda e: self._notes_on_change())
-
-        self._render_markdown_to_view("Select a task…")
 
     # ---------- Date picker ----------
     def _open_date_picker(self):
@@ -967,7 +945,7 @@ class TodoWindow:
             self.err.config(text=str(e))
 
     def _autosave_if_needed(self) -> bool:
-        # also flush property autosave immediately on task switch
+        # flush props autosave immediately
         if self._prop_save_job:
             try:
                 self.root.after_cancel(self._prop_save_job)
@@ -1042,11 +1020,6 @@ class TodoWindow:
         )
         self.btn_edit_save.config(text="Edit")
         self._notes_editing = False
-
-    # ---------- Properties apply (manual) ----------
-    def _apply_properties(self):
-        # still available, but autosave is default
-        self._prop_autosave_now()
 
     # ---------- deps ----------
     def _pick_dep(self, mode: str):
@@ -1249,9 +1222,6 @@ class TodoWindow:
 
         self._bind_click_select(listbox, kind)
 
-        listbox.bind(
-            "<<ListboxSelect>>", lambda e, k=kind: self._on_select(k), add=True
-        )
         if kind in ("todo", "doing"):
             listbox.bind(
                 "<Double-Button-1>", lambda e: self._open_pomodoro_for_selected()
@@ -1267,7 +1237,6 @@ class TodoWindow:
 
     def _dnd_start(self, event, kind: str):
         self._drag_gesture_active = False
-
         lb = event.widget
         try:
             idx = lb.nearest(event.y)
@@ -1365,31 +1334,6 @@ class TodoWindow:
         except Exception:
             pass
 
-    def _on_select(self, column: str):
-        if not self._autosave_if_needed():
-            return
-
-        self._clear_other_selections(column)
-
-        task_id = None
-        try:
-            if column == "todo":
-                sel = self.list_todo.curselection()
-                if sel:
-                    task_id = self._map_todo.get(int(sel[0]))
-            elif column == "doing":
-                sel = self.list_doing.curselection()
-                if sel:
-                    task_id = self._map_doing.get(int(sel[0]))
-            else:
-                sel = self.list_done.curselection()
-                if sel:
-                    task_id = self._map_done.get(int(sel[0]))
-        except Exception:
-            task_id = None
-
-        self._apply_selected_task(column, task_id)
-
     def _clear_selected_ui(self):
         self.active_task_id = None
         self.active_task_title = None
@@ -1400,7 +1344,11 @@ class TodoWindow:
 
         self._enable_side_controls(False)
 
-        self.score_label.config(text="-")
+        try:
+            self.score_label.config(text="-")
+            self.score_pill.config(text="Score: -")
+        except Exception:
+            pass
 
         self._prop_block_programmatic = True
         try:
@@ -1411,8 +1359,12 @@ class TodoWindow:
         finally:
             self._prop_block_programmatic = False
 
-        self.list_blockers.delete(0, tk.END)
-        self.list_waiting.delete(0, tk.END)
+        try:
+            self.list_blockers.delete(0, tk.END)
+            self.list_waiting.delete(0, tk.END)
+        except Exception:
+            pass
+
         self._render_markdown_to_view("Select a task…")
 
     def _refresh_selected_details(self):
@@ -1428,7 +1380,9 @@ class TodoWindow:
         self.sel_label.config(text=f"Selected: {t.title}")
         self.details_hint.config(text=t.title)
 
-        self.score_label.config(text=str(self._scores.get(t.id, 0)))
+        sc = str(self._scores.get(t.id, 0))
+        self.score_label.config(text=sc)
+        self.score_pill.config(text=f"Score: {sc}")
 
         self._prop_block_programmatic = True
         try:
