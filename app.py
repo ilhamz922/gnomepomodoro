@@ -1,4 +1,3 @@
-# app.py  (REPLACE) — wires everything together
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -15,8 +14,10 @@ def main():
     task_service = TaskService(db)
     stats_service = StatsService(db)
 
-    app = TodoWindow(task_service, stats_service)
-    app.run()
+    win = TodoWindow(task_service=task_service, stats_service=stats_service)
+    win.run()
+
+    db.close()
 
 
 if __name__ == "__main__":

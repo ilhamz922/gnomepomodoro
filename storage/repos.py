@@ -1,4 +1,4 @@
-# storage/repos.py  (REPLACE) — TaskRepo includes notes_md column
+# storage/repos.py  (REPLACE) — TaskRepo includes notes_md + due_date + priority + deps
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -21,6 +21,9 @@ class Task:
     status: str
     created_at: int
     updated_at: int
+    notes_md: str = ""
+    due_date: Optional[str] = None  # yyyy-mm-dd
+    priority: str = "P2"
 
 
 class AppStateRepo:
@@ -57,27 +60,39 @@ class TaskRepo:
         tid = str(uuid.uuid4())
         ts = _now_ts()
         self.db.conn.execute(
-            "INSERT INTO tasks(id, title, status, created_at, updated_at, notes_md) VALUES(?,?,?,?,?,?)",
-            (tid, title, status, ts, ts, ""),
+            """
+            INSERT INTO tasks(id, title, status, created_at, updated_at, notes_md, due_date, priority)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (tid, title, status, ts, ts, "", None, "P2"),
         )
         self.db.conn.commit()
-        return Task(id=tid, title=title, status=status, created_at=ts, updated_at=ts)
+        return self.get(tid)
 
     def list(self, status: Optional[str] = None) -> List[Task]:
         if status:
             rows = self.db.conn.execute(
-                "SELECT id, title, status, created_at, updated_at FROM tasks WHERE status=? ORDER BY updated_at DESC",
+                """
+                SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+                FROM tasks WHERE status=? ORDER BY updated_at DESC
+                """,
                 (status,),
             ).fetchall()
         else:
             rows = self.db.conn.execute(
-                "SELECT id, title, status, created_at, updated_at FROM tasks ORDER BY updated_at DESC"
+                """
+                SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+                FROM tasks ORDER BY updated_at DESC
+                """
             ).fetchall()
         return [Task(**dict(r)) for r in rows]
 
     def get(self, task_id: str) -> Optional[Task]:
         r = self.db.conn.execute(
-            "SELECT id, title, status, created_at, updated_at FROM tasks WHERE id=?",
+            """
+            SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+            FROM tasks WHERE id=?
+            """,
             (task_id,),
         ).fetchone()
         return Task(**dict(r)) if r else None
@@ -90,7 +105,32 @@ class TaskRepo:
         )
         self.db.conn.commit()
 
+    def rename(self, task_id: str, title: str) -> None:
+        ts = _now_ts()
+        self.db.conn.execute(
+            "UPDATE tasks SET title=?, updated_at=? WHERE id=?",
+            (title, ts, task_id),
+        )
+        self.db.conn.commit()
+
+    def set_due_date(self, task_id: str, due_date: Optional[str]) -> None:
+        ts = _now_ts()
+        self.db.conn.execute(
+            "UPDATE tasks SET due_date=?, updated_at=? WHERE id=?",
+            (due_date, ts, task_id),
+        )
+        self.db.conn.commit()
+
+    def set_priority(self, task_id: str, priority: str) -> None:
+        ts = _now_ts()
+        self.db.conn.execute(
+            "UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
+            (priority, ts, task_id),
+        )
+        self.db.conn.commit()
+
     def delete_task(self, task_id: str) -> None:
+        # cascade deletes deps because FK ON DELETE CASCADE
         self.db.conn.execute("DELETE FROM sessions WHERE task_id=?", (task_id,))
         self.db.conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         self.db.conn.commit()
@@ -110,3 +150,26 @@ class TaskRepo:
             (notes_md, ts, task_id),
         )
         self.db.conn.commit()
+
+    # ---- deps ----
+    def add_dep(self, task_id: str, dep_id: str, kind: str) -> None:
+        ts = _now_ts()
+        self.db.conn.execute(
+            "INSERT OR IGNORE INTO task_deps(task_id, dep_id, kind, created_at) VALUES(?,?,?,?)",
+            (task_id, dep_id, kind, ts),
+        )
+        self.db.conn.commit()
+
+    def remove_dep(self, task_id: str, dep_id: str, kind: str) -> None:
+        self.db.conn.execute(
+            "DELETE FROM task_deps WHERE task_id=? AND dep_id=? AND kind=?",
+            (task_id, dep_id, kind),
+        )
+        self.db.conn.commit()
+
+    def list_deps(self, task_id: str, kind: str) -> List[str]:
+        rows = self.db.conn.execute(
+            "SELECT dep_id FROM task_deps WHERE task_id=? AND kind=? ORDER BY created_at ASC",
+            (task_id, kind),
+        ).fetchall()
+        return [r["dep_id"] for r in rows]

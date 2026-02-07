@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-APP_DIR="$HOME/Projects/pomodoro"
-cd "$APP_DIR"
+cd "$(dirname "$0")"
 
-# kalau lo pakai venv:
-if [ -f ".venv/bin/python" ]; then
-  exec "$APP_DIR/.venv/bin/python" app.py
-else
-  exec python3 app.py
+if [ -x ".venv/bin/python" ]; then
+  exec .venv/bin/python app.py
 fi
+
+exec python3 app.py
