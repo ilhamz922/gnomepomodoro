@@ -298,21 +298,6 @@ class TodoWindow:
 
         tk.Button(
             bottom,
-            text="← Move Left",
-            command=self._move_left,
-            bg=self.graybtn,
-            fg=self.text,
-            relief="flat",
-            bd=0,
-            activebackground=self.graybtn,
-            activeforeground=self.text,
-            font=("Montserrat", 10, "bold"),
-            padx=12,
-            pady=8,
-        ).pack(side="right", padx=(10, 0))
-
-        tk.Button(
-            bottom,
             text="Move Right →",
             command=self._move_right,
             bg=self.graybtn,
@@ -325,6 +310,21 @@ class TodoWindow:
             padx=12,
             pady=8,
         ).pack(side="right")
+
+        tk.Button(
+            bottom,
+            text="← Move Left",
+            command=self._move_left,
+            bg=self.graybtn,
+            fg=self.text,
+            relief="flat",
+            bd=0,
+            activebackground=self.graybtn,
+            activeforeground=self.text,
+            font=("Montserrat", 10, "bold"),
+            padx=12,
+            pady=8,
+        ).pack(side="right", padx=(10, 0))
 
         self.err = tk.Label(
             self.root, text="", bg=self.bg, fg=self.danger, font=("Montserrat", 9)
@@ -970,19 +970,173 @@ class TodoWindow:
         return True
 
     def _render_markdown_to_view(self, md_text: str):
+        # Prefer richer markdown features if available (pymdown-extensions),
+        # but gracefully fall back to built-in extensions without breaking.
+        exts = [
+            "extra",
+            "sane_lists",
+            "tables",
+            "fenced_code",
+            "nl2br",
+            "attr_list",
+        ]
+        ext_cfg = {}
+
+        has_pymdown = False
+        try:
+            import pymdownx  # noqa: F401
+
+            has_pymdown = True
+        except Exception:
+            has_pymdown = False
+
+        if has_pymdown:
+            exts += [
+                "pymdownx.tasklist",
+                "pymdownx.superfences",
+                "pymdownx.highlight",
+                "pymdownx.tilde",
+                "pymdownx.strikethrough",
+            ]
+            ext_cfg.update(
+                {
+                    "pymdownx.tasklist": {
+                        "custom_checkbox": True,
+                        "clickable_checkbox": False,
+                    },
+                    "pymdownx.highlight": {
+                        "use_pygments": False,
+                    },
+                }
+            )
+
         html_body = markdown(
-            md_text or "", extensions=["extra", "sane_lists", "tables", "fenced_code"]
+            md_text or "",
+            extensions=exts,
+            extension_configs=ext_cfg,
+            output_format="html5",
         )
+
         html = f"""
-        <html><head><meta charset="utf-8"/>
-        <style>
-          body {{ font-family: sans-serif; margin: 12px; color: #111827; }}
-          p, li {{ line-height: 1.45; }}
-          code {{ background: #F3F4F6; padding: 2px 4px; border-radius: 6px; }}
-          pre code {{ display: block; padding: 10px; overflow-x: auto; }}
-        </style>
-        </head><body>{html_body}</body></html>
+        <html>
+        <head>
+          <meta charset="utf-8"/>
+          <style>
+            :root {{
+              --text: #111827;
+              --muted: #6B7280;
+              --border: #E5E7EB;
+              --panel: #FFFFFF;
+              --codebg: #F3F4F6;
+              --link: #2563EB;
+            }}
+
+            body {{
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+              margin: 14px;
+              color: var(--text);
+              background: var(--panel);
+              font-size: 14px;
+              line-height: 1.55;
+              word-wrap: break-word;
+              overflow-wrap: anywhere;
+            }}
+
+            h1, h2, h3, h4 {{
+              margin: 1.0em 0 0.5em;
+              line-height: 1.2;
+            }}
+            h1 {{ font-size: 1.35em; }}
+            h2 {{ font-size: 1.2em; }}
+            h3 {{ font-size: 1.08em; }}
+
+            p {{ margin: 0.6em 0; }}
+
+            a {{
+              color: var(--link);
+              text-decoration: none;
+            }}
+            a:hover {{ text-decoration: underline; }}
+
+            hr {{
+              border: 0;
+              border-top: 1px solid var(--border);
+              margin: 1em 0;
+            }}
+
+            ul, ol {{
+              padding-left: 1.2em;
+              margin: 0.6em 0;
+            }}
+
+            li {{
+              margin: 0.25em 0;
+            }}
+
+            blockquote {{
+              margin: 0.8em 0;
+              padding: 0.2em 0 0.2em 0.9em;
+              border-left: 4px solid #3B82F6;
+              color: var(--muted);
+              background: #F9FAFB;
+              border-radius: 8px;
+            }}
+
+            table {{
+              border-collapse: collapse;
+              width: 100%;
+              margin: 0.8em 0;
+              font-size: 0.95em;
+            }}
+            th, td {{
+              border: 1px solid var(--border);
+              padding: 8px 10px;
+              vertical-align: top;
+            }}
+            th {{
+              background: #F9FAFB;
+              font-weight: 700;
+            }}
+
+            code {{
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+              background: var(--codebg);
+              padding: 2px 5px;
+              border-radius: 6px;
+              font-size: 0.92em;
+            }}
+
+            pre {{
+              background: var(--codebg);
+              padding: 10px 12px;
+              border-radius: 10px;
+              overflow-x: auto;
+              border: 1px solid var(--border);
+              margin: 0.9em 0;
+            }}
+            pre code {{
+              background: transparent;
+              padding: 0;
+              border-radius: 0;
+              display: block;
+              white-space: pre;
+            }}
+
+            /* pymdownx tasklist style */
+            .task-list-item {{
+              list-style: none;
+              margin-left: -1.1em;
+            }}
+            .task-list-item input[type="checkbox"] {{
+              margin-right: 0.55em;
+              transform: translateY(1px);
+            }}
+          </style>
+        </head>
+        <body>{html_body}</body>
+        </html>
         """
+
         try:
             self.md_view.load_html(html)
         except Exception:
