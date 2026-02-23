@@ -15,6 +15,7 @@ from services.stats_service import StatsService
 from services.task_service import TaskService
 from storage.repos import AppStateRepo, Task
 from ui.markdown_renderer import MarkdownRenderer, MarkdownTheme
+from ui.slash_commands import SlashCommandConfig, SlashCommandExpander
 
 
 def _fmt_hms(sec: int) -> str:
@@ -61,7 +62,9 @@ class TodoWindow:
                 quote=self.blue,
             )
         )
-
+        self._slash = SlashCommandExpander(
+            SlashCommandConfig(stamp_fmt="%a, %d %b %Y • %H:%M", day_fmt="%a, %d %b %Y")
+        )
         self.root.configure(bg=self.bg)
 
         self.active_task_id: Optional[str] = None
@@ -465,6 +468,23 @@ class TodoWindow:
             lambda e: (self.md_edit.tag_add("sel", "1.0", "end-1c"), "break"),
         )
         self.md_edit.bind("<KeyRelease>", lambda e: self._notes_on_change())
+
+        def _on_space(e):
+            expanded = self._slash.try_expand(self.md_edit)
+            if expanded:
+                self._notes_dirty = True
+                self._notes_autosave_debounced(400)
+            return None
+
+        def _on_enter(e):
+            expanded = self._slash.try_expand(self.md_edit)
+            if expanded:
+                self._notes_dirty = True
+                self._notes_autosave_debounced(400)
+            return None
+
+        self.md_edit.bind("<space>", _on_space, add=True)
+        self.md_edit.bind("<Return>", _on_enter, add=True)
 
         self._render_markdown_to_view("Select a task…")
         self._enable_side_controls(False)
