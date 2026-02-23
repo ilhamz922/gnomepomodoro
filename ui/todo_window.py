@@ -1,3 +1,4 @@
+# ui/todo_window.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -26,6 +27,17 @@ def _fmt_hms(sec: int) -> str:
     if h > 0:
         return f"{h}h {m:02d}m"
     return f"{m}m {s:02d}s"
+
+
+def _repeat_badge(rule: str) -> str:
+    rule = (rule or "none").strip().lower()
+    if rule == "daily":
+        return " 🔁D"
+    if rule == "weekly":
+        return " 🔁W"
+    if rule == "monthly":
+        return " 🔁M"
+    return ""
 
 
 class TodoWindow:
@@ -96,6 +108,10 @@ class TodoWindow:
         # property autosave (debounced)
         self._prop_save_job = None
         self._prop_block_programmatic = False  # prevent autosave during UI fill
+
+        # deps maps
+        self._dep_map_blockers: Dict[int, str] = {}
+        self._dep_map_waiting: Dict[int, str] = {}
 
         self._build_ui()
         self._refresh_all()
@@ -391,7 +407,6 @@ class TodoWindow:
         )
         self.btn_toggle_props.pack(side="left")
 
-        # Score quick glance on the right (biar gak perlu buka accordion)
         self.score_pill = tk.Label(
             acc_head,
             text="Score: -",
@@ -507,6 +522,7 @@ class TodoWindow:
             self.due_entry.config(state=state)
             self.btn_pick_date.config(state=state)
             self.priority_menu.config(state=state)
+            self.repeat_menu.config(state=state)
 
             self.btn_add_blocker.config(state=state)
             self.btn_rm_blocker.config(state=state)
@@ -538,10 +554,12 @@ class TodoWindow:
             name = (self.name_entry.get() or "").strip()
             due = (self.due_entry.get() or "").strip()
             pr = (self.priority_var.get() or "P2").strip().upper()
+            rr = (self.repeat_var.get() or "none").strip().lower()
 
             self.task_service.rename_task(self.active_task_id, name)
             self.task_service.set_due_date(self.active_task_id, due)
             self.task_service.set_priority(self.active_task_id, pr)
+            self.task_service.set_repeat_rule(self.active_task_id, rr)
 
             self.err.config(text="")
             self._refresh_all()
@@ -658,6 +676,25 @@ class TodoWindow:
             card, text="—", bg=self.panel, fg=self.muted, font=("Montserrat", 9)
         )
         self.due_info.pack(anchor="w", padx=12, pady=(0, 8))
+
+        # Repeat (single row)
+        rrep = tk.Frame(card, bg=self.panel)
+        rrep.pack(fill="x", padx=12, pady=(0, 10))
+
+        tk.Label(
+            rrep, text="Repeat", bg=self.panel, fg=self.muted, font=("Montserrat", 9)
+        ).pack(anchor="w")
+
+        self.repeat_var = tk.StringVar(value="none")
+        self.repeat_menu = tk.OptionMenu(
+            rrep, self.repeat_var, "none", "daily", "weekly", "monthly"
+        )
+        self.repeat_menu.config(
+            bg=self.graybtn, fg=self.text, relief="flat", bd=0, highlightthickness=0
+        )
+        self.repeat_menu["menu"].config(bg=self.panel, fg=self.text)
+        self.repeat_menu.pack(anchor="w", fill="x")
+        self.repeat_var.trace_add("write", lambda *_: self._schedule_prop_autosave())
 
         # Dependencies
         deps = tk.Frame(card, bg=self.panel)
@@ -1322,10 +1359,20 @@ class TodoWindow:
 
         if target_kind and target_kind != self._dnd_src_kind:
             try:
-                self.task_service.set_status(self._dnd_task_id, target_kind)
+                if target_kind == "done":
+                    new_id = self.task_service.complete_task(self._dnd_task_id)
+                    if new_id:
+                        self.active_task_id = new_id
+                        self.active_task_status = "todo"
+                    else:
+                        self.active_task_id = self._dnd_task_id
+                        self.active_task_status = "done"
+                else:
+                    self.task_service.set_status(self._dnd_task_id, target_kind)
+                    self.active_task_id = self._dnd_task_id
+                    self.active_task_status = target_kind
+
                 self.err.config(text="")
-                self.active_task_id = self._dnd_task_id
-                self.active_task_status = target_kind
                 self._refresh_all()
                 self._refresh_selected_details()
             except Exception as e:
@@ -1376,6 +1423,7 @@ class TodoWindow:
             self.due_entry.delete(0, tk.END)
             self.due_info.config(text="—")
             self.priority_var.set("P2")
+            self.repeat_var.set("none")
         finally:
             self._prop_block_programmatic = False
 
@@ -1415,6 +1463,7 @@ class TodoWindow:
             self._update_due_info()
 
             self.priority_var.set((getattr(t, "priority", None) or "P2").upper())
+            self.repeat_var.set((getattr(t, "repeat_rule", None) or "none").lower())
         finally:
             self._prop_block_programmatic = False
 
@@ -1497,6 +1546,7 @@ class TodoWindow:
             return
         try:
             self.task_service.set_status(self.active_task_id, new_status)
+            self.active_task_status = new_status
             self._refresh_all()
         except Exception as e:
             self.err.config(text=str(e))
@@ -1506,20 +1556,29 @@ class TodoWindow:
             return
         if not self._autosave_if_needed():
             return
-        new_status = (
-            "doing"
-            if self.active_task_status == "todo"
-            else "done"
-            if self.active_task_status == "doing"
-            else None
-        )
-        if not new_status:
+
+        if self.active_task_status == "todo":
+            new_status = "doing"
+            try:
+                self.task_service.set_status(self.active_task_id, new_status)
+                self.active_task_status = new_status
+                self._refresh_all()
+            except Exception as e:
+                self.err.config(text=str(e))
             return
-        try:
-            self.task_service.set_status(self.active_task_id, new_status)
-            self._refresh_all()
-        except Exception as e:
-            self.err.config(text=str(e))
+
+        if self.active_task_status == "doing":
+            try:
+                new_id = self.task_service.complete_task(self.active_task_id)
+                if new_id:
+                    self.active_task_id = new_id
+                    self.active_task_status = "todo"
+                else:
+                    self.active_task_status = "done"
+                self._refresh_all()
+            except Exception as e:
+                self.err.config(text=str(e))
+            return
 
     def _open_pomodoro_for_selected(self):
         if not self.active_task_id:
@@ -1539,6 +1598,7 @@ class TodoWindow:
 
         try:
             self.task_service.set_status(self.active_task_id, "doing")
+            self.active_task_status = "doing"
         except Exception:
             pass
 
@@ -1552,7 +1612,8 @@ class TodoWindow:
     # ---------- refresh/sort ----------
     def _format_task_line(self, t: Task) -> str:
         score = self._scores.get(t.id, 0)
-        return f"[{score:>3}] {t.title}"
+        rr = getattr(t, "repeat_rule", None) or "none"
+        return f"[{score:>3}] {t.title}{_repeat_badge(rr)}"
 
     def _sort_by_score(self, tasks: List[Task]) -> List[Task]:
         return sorted(

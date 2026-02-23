@@ -1,4 +1,4 @@
-# storage/repos.py  (REPLACE) — TaskRepo includes notes_md + due_date + priority + deps
+# storage/repos.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -19,11 +19,12 @@ class Task:
     id: str
     title: str
     status: str
-    created_at: int
-    updated_at: int
     notes_md: str = ""
     due_date: Optional[str] = None  # yyyy-mm-dd
     priority: str = "P2"
+    repeat_rule: str = "none"
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class AppStateRepo:
@@ -55,16 +56,56 @@ class AppStateRepo:
 class TaskRepo:
     def __init__(self, db: Database):
         self.db = db
+        self._ensure_repeat_rule_column()
 
-    def create(self, title: str, status: str = "todo") -> Task:
+    def _ensure_repeat_rule_column(self) -> None:
+        # SQLite: add column if missing
+        try:
+            cols = self.db.conn.execute("PRAGMA table_info(tasks)").fetchall()
+            names = {c["name"] for c in cols} if cols else set()
+            if "repeat_rule" not in names:
+                self.db.conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN repeat_rule TEXT DEFAULT 'none'"
+                )
+                self.db.conn.commit()
+        except Exception:
+            # If PRAGMA fails for any reason, don't crash app startup.
+            pass
+
+    def create(
+        self,
+        title: str,
+        status: str = "todo",
+        notes_md: str = "",
+        due_date: Optional[str] = None,
+        priority: str = "P2",
+        repeat_rule: str = "none",
+    ) -> Task:
         tid = str(uuid.uuid4())
         ts = _now_ts()
+        rr = (repeat_rule or "none").strip().lower()
+        if rr not in ("none", "daily", "weekly", "monthly"):
+            rr = "none"
+
         self.db.conn.execute(
             """
-            INSERT INTO tasks(id, title, status, created_at, updated_at, notes_md, due_date, priority)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO tasks(
+                id, title, status, created_at, updated_at,
+                notes_md, due_date, priority, repeat_rule
+            )
+            VALUES(?,?,?,?,?,?,?,?,?)
             """,
-            (tid, title, status, ts, ts, "", None, "P2"),
+            (
+                tid,
+                title,
+                status,
+                ts,
+                ts,
+                notes_md or "",
+                due_date,
+                (priority or "P2"),
+                rr,
+            ),
         )
         self.db.conn.commit()
         return self.get(tid)
@@ -73,7 +114,9 @@ class TaskRepo:
         if status:
             rows = self.db.conn.execute(
                 """
-                SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+                SELECT id, title, status, created_at, updated_at,
+                       notes_md, due_date, priority,
+                       COALESCE(repeat_rule,'none') AS repeat_rule
                 FROM tasks WHERE status=? ORDER BY updated_at DESC
                 """,
                 (status,),
@@ -81,7 +124,9 @@ class TaskRepo:
         else:
             rows = self.db.conn.execute(
                 """
-                SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+                SELECT id, title, status, created_at, updated_at,
+                       notes_md, due_date, priority,
+                       COALESCE(repeat_rule,'none') AS repeat_rule
                 FROM tasks ORDER BY updated_at DESC
                 """
             ).fetchall()
@@ -90,7 +135,9 @@ class TaskRepo:
     def get(self, task_id: str) -> Optional[Task]:
         r = self.db.conn.execute(
             """
-            SELECT id, title, status, created_at, updated_at, notes_md, due_date, priority
+            SELECT id, title, status, created_at, updated_at,
+                   notes_md, due_date, priority,
+                   COALESCE(repeat_rule,'none') AS repeat_rule
             FROM tasks WHERE id=?
             """,
             (task_id,),
@@ -126,6 +173,17 @@ class TaskRepo:
         self.db.conn.execute(
             "UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
             (priority, ts, task_id),
+        )
+        self.db.conn.commit()
+
+    def set_repeat_rule(self, task_id: str, repeat_rule: str) -> None:
+        ts = _now_ts()
+        rr = (repeat_rule or "none").strip().lower()
+        if rr not in ("none", "daily", "weekly", "monthly"):
+            rr = "none"
+        self.db.conn.execute(
+            "UPDATE tasks SET repeat_rule=?, updated_at=? WHERE id=?",
+            (rr, ts, task_id),
         )
         self.db.conn.commit()
 

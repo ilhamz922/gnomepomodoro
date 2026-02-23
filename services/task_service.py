@@ -1,17 +1,17 @@
-# services/task_service.py  (REPLACE) — deps + due/priority + score rules (clamp)
+# services/task_service.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
 from storage.db import Database
 from storage.repos import AppStateRepo, Task, TaskRepo
 
 PRIORITY_WEIGHT = {"P0": 20, "P1": 5, "P2": 0}
+REPEAT_RULES = ("none", "daily", "weekly", "monthly")
 
 
 class TaskService:
@@ -79,6 +79,22 @@ class TaskService:
             raise ValueError("Task not found.")
         self.tasks.set_priority(task_id, pr)
 
+    # ---- repeat ----
+    def set_repeat_rule(self, task_id: str, rule: str) -> None:
+        if not self.tasks.get(task_id):
+            raise ValueError("Task not found.")
+        rule = (rule or "none").strip().lower()
+        if rule not in REPEAT_RULES:
+            raise ValueError("Invalid repeat rule. Use none/daily/weekly/monthly.")
+        self.tasks.set_repeat_rule(task_id, rule)
+
+    def get_repeat_rule(self, task_id: str) -> str:
+        t = self.tasks.get(task_id)
+        if not t:
+            return "none"
+        r = (getattr(t, "repeat_rule", None) or "none").strip().lower()
+        return r if r in REPEAT_RULES else "none"
+
     def delete_task(self, task_id: str) -> None:
         active = self.state.get("active_task_id")
         if active and active == task_id:
@@ -131,16 +147,78 @@ class TaskService:
     def list_waiting_on(self, task_id: str) -> List[str]:
         return self.tasks.list_deps(task_id, "waiting")
 
+    # ---- repeat lifecycle ----
+    def complete_task(self, task_id: str) -> Optional[str]:
+        """
+        Mark task as done.
+        If task has repeat_rule, auto-create a new instance in TODO and return new task_id.
+        """
+        t = self.tasks.get(task_id)
+        if not t:
+            raise ValueError("Task not found.")
+
+        self.tasks.set_status(task_id, "done")
+
+        rule = (getattr(t, "repeat_rule", None) or "none").strip().lower()
+        if rule not in REPEAT_RULES or rule == "none":
+            return None
+
+        next_due = self._compute_next_due_date(t.due_date, rule)
+        new_task = self.tasks.create(
+            title=t.title,
+            status="todo",
+            notes_md=t.notes_md or "",
+            due_date=next_due,
+            priority=(t.priority or "P2").upper(),
+            repeat_rule=rule,
+        )
+        return new_task.id
+
+    def _compute_next_due_date(
+        self, due_date: Optional[str], rule: str
+    ) -> Optional[str]:
+        rule = (rule or "none").strip().lower()
+        if rule not in REPEAT_RULES or rule == "none":
+            return due_date
+
+        base = None
+        if due_date:
+            try:
+                base = dt.date.fromisoformat(due_date)
+            except Exception:
+                base = None
+        if base is None:
+            base = dt.date.today()
+
+        if rule == "daily":
+            nxt = base + dt.timedelta(days=1)
+        elif rule == "weekly":
+            nxt = base + dt.timedelta(days=7)
+        elif rule == "monthly":
+            # month add (preserve day where possible)
+            y = base.year
+            m = base.month + 1
+            if m > 12:
+                m = 1
+                y += 1
+
+            # clamp day to last day of target month
+            import calendar as _cal
+
+            last_day = _cal.monthrange(y, m)[1]
+            d = min(base.day, last_day)
+            nxt = dt.date(y, m, d)
+        else:
+            nxt = base
+
+        return nxt.isoformat()
+
     # ---- scoring ----
     def prioritization_scores(self) -> Dict[str, int]:
         all_tasks = self.list_all_tasks()
         task_by_id: Dict[str, Task] = {t.id: t for t in all_tasks}
 
         def base_score(t: Task) -> int:
-            # due component rules:
-            # days_until = due - today
-            # clamp to [0..25]
-            # due_score = 25 - clamp(days_until)
             due_score = 0
             if t.due_date:
                 try:
@@ -157,7 +235,12 @@ class TaskService:
 
             pr = (t.priority or "P2").strip().upper()
             pr_score = PRIORITY_WEIGHT.get(pr, 0)
-            return int(due_score + pr_score)
+
+            # small nudge for repeating tasks so they don't get buried
+            rr = (getattr(t, "repeat_rule", None) or "none").strip().lower()
+            rep_score = 2 if rr in ("daily", "weekly", "monthly") else 0
+
+            return int(due_score + pr_score + rep_score)
 
         memo: Dict[str, int] = {}
 
@@ -165,7 +248,6 @@ class TaskService:
             if task_id in memo:
                 return memo[task_id]
             if task_id in visiting:
-                # cycle guard: break cycle by not accumulating further
                 return 0
             visiting.add(task_id)
 
@@ -176,7 +258,6 @@ class TaskService:
 
             score = base_score(t)
 
-            # accumulate blocker scores (task blocked by these)
             blockers = self.list_blockers(task_id)
             for bid in blockers:
                 score += total_score(bid, visiting)

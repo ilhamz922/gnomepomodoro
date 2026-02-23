@@ -117,6 +117,29 @@ Type command and press **Space** or **Enter**.
 
 ------------------------------------------------------------------------
 
+### 🔁 Repetitive Tasks (NEW)
+
+Tasks can repeat:
+
+| Rule     | Behavior |
+|----------|----------|
+| `none`   | Normal task |
+| `daily`  | Creates new task next day when completed |
+| `weekly` | Creates new task +7 days |
+| `monthly`| Creates new task next month (safe date clamp) |
+
+When a repeating task is moved to **DONE**:
+- It is marked completed
+- A new instance is automatically created in **TODO**
+- Due date is shifted according to rule
+
+Kanban column shows badges:
+- 🔁D = Daily  
+- 🔁W = Weekly  
+- 🔁M = Monthly  
+
+------------------------------------------------------------------------
+
 # Installation
 
 ## Requirements
@@ -211,3 +234,4 @@ MIT License
 
 Muhammad Ilham\
 GitHub: https://github.com/ilhamz922
+# 🧠 Pomodoro Kanban
