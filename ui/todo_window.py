@@ -1,13 +1,36 @@
-# ui/todo_window.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+This file provides the TodoWindow class responsible for managing the Kanban board
+and task details. It has been adapted from the upstream version of the file and
+includes an additional progress bar property for each task. The progress bar
+counts the number of markdown task list items in the task's description and
+indicates how many have been completed. The progress is read‑only and cannot
+be edited manually.
+
+The code below is a direct copy of the upstream `ui/todo_window.py` from the
+`gnomepomodoro` repository (commit ef766ca), with modifications annotated with
+comments that begin with 'MODIFIED:'. These modifications introduce the
+progress bar. See `_refresh_selected_details` for how the progress bar is
+calculated and updated.
+
+Note: This file depends on the `tkinterweb` library for rendering Markdown.
+If it is not available in your local environment, you may need to install it
+or adjust the code accordingly. The progress bar feature itself does not
+depend on `tkinterweb`.
+"""
+
 import calendar
 import os
+import re  # MODIFIED: used for detecting markdown task lists
 import subprocess
 import sys
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import (
+    messagebox,
+    ttk,  # MODIFIED: import ttk for progress bar
+)
 from typing import Dict, List, Optional
 
 from tkinterweb import HtmlFrame
@@ -112,6 +135,10 @@ class TodoWindow:
         # deps maps
         self._dep_map_blockers: Dict[int, str] = {}
         self._dep_map_waiting: Dict[int, str] = {}
+
+        # MODIFIED: progress bar widgets
+        self.progress_bar = None  # type: Optional[ttk.Progressbar]
+        self.progress_text = None  # type: Optional[tk.Label]
 
         self._build_ui()
         self._refresh_all()
@@ -584,6 +611,36 @@ class TodoWindow:
             r0, text="-", bg=self.panel, fg=self.text, font=("Montserrat", 10, "bold")
         )
         self.score_label.pack(side="right")
+
+        # MODIFIED: Progress row – display progress of markdown task lists
+        rprog = tk.Frame(card, bg=self.panel)
+        rprog.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(
+            rprog,
+            text="Progress",
+            bg=self.panel,
+            fg=self.muted,
+            font=("Montserrat", 9),
+        ).pack(anchor="w")
+        bar_row = tk.Frame(rprog, bg=self.panel)
+        bar_row.pack(fill="x")
+        # progress bar: value and maximum will be set dynamically when a task is selected
+        self.progress_bar = ttk.Progressbar(
+            bar_row,
+            orient="horizontal",
+            mode="determinate",
+            length=100,
+        )
+        self.progress_bar.pack(side="left", fill="x", expand=True)
+        # label to show numeric progress (e.g., "3/5") or percentage
+        self.progress_text = tk.Label(
+            bar_row,
+            text="-",
+            bg=self.panel,
+            fg=self.text,
+            font=("Montserrat", 9),
+        )
+        self.progress_text.pack(side="left", padx=(6, 0))
 
         # Name row
         r1 = tk.Frame(card, bg=self.panel)
@@ -1433,6 +1490,15 @@ class TodoWindow:
         except Exception:
             pass
 
+        # MODIFIED: reset progress bar
+        if self.progress_bar is not None:
+            try:
+                self.progress_bar["maximum"] = 1
+                self.progress_bar["value"] = 0
+                self.progress_text.config(text="-")
+            except Exception:
+                pass
+
         self._render_markdown_to_view("Select a task…")
 
     def _refresh_selected_details(self):
@@ -1486,6 +1552,41 @@ class TodoWindow:
             name = tt.title if tt else wid
             self.list_waiting.insert(tk.END, name)
             self._dep_map_waiting[i] = wid
+
+        # MODIFIED: calculate markdown task list progress
+        try:
+            md = self.task_service.get_notes_md(t.id) or ""
+            # regex to match '- [ ]' (unchecked) and '- [x]' (checked), case-insensitive
+            pattern = re.compile(r"^\s*[-*]\s*\[( |x|X)\]", re.IGNORECASE)
+            total = 0
+            completed = 0
+            for line in md.splitlines():
+                m = pattern.match(line)
+                if m:
+                    total += 1
+                    chk = m.group(1)
+                    if chk.lower() == "x":
+                        completed += 1
+            # update progress bar and text
+            if self.progress_bar is not None:
+                if total > 0:
+                    # set maximum to total and value to completed to show discrete progress
+                    self.progress_bar["maximum"] = total
+                    self.progress_bar["value"] = completed
+                    self.progress_text.config(text=f"{completed}/{total}")
+                else:
+                    self.progress_bar["maximum"] = 1
+                    self.progress_bar["value"] = 0
+                    self.progress_text.config(text="0/0")
+        except Exception:
+            # fallback if regex or update fails
+            if self.progress_bar is not None:
+                try:
+                    self.progress_bar["maximum"] = 1
+                    self.progress_bar["value"] = 0
+                    self.progress_text.config(text="-")
+                except Exception:
+                    pass
 
         md = self.task_service.get_notes_md(t.id) or ""
         self._render_markdown_to_view(
